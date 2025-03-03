@@ -24,7 +24,7 @@
 static volatile sig_atomic_t exiting = 0;
 
 static pid_t target_pid = 0;
-static int target_signal = 0;
+static int target_signals = 0;
 static bool failed_only = false;
 static bool kill_only = false;
 static bool signal_name = false;
@@ -63,40 +63,74 @@ static const char *sig_name[] = {
 	[29] = "SIGIO",
 	[30] = "SIGPWR",
 	[31] = "SIGSYS",
+	[32] = "SIGNAL-32", /* SIGRTMIN in kernel */
+	[33] = "SIGNAL-33",
+	[34] = "SIGNAL-34",
+	[35] = "SIGNAL-35",
+	[36] = "SIGNAL-36",
+	[37] = "SIGNAL-37",
+	[38] = "SIGNAL-38",
+	[39] = "SIGNAL-39",
+	[40] = "SIGNAL-40",
+	[41] = "SIGNAL-41",
+	[42] = "SIGNAL-42",
+	[43] = "SIGNAL-43",
+	[44] = "SIGNAL-44",
+	[45] = "SIGNAL-45",
+	[46] = "SIGNAL-46",
+	[47] = "SIGNAL-47",
+	[48] = "SIGNAL-48",
+	[49] = "SIGNAL-49",
+	[50] = "SIGNAL-50",
+	[51] = "SIGNAL-51",
+	[52] = "SIGNAL-52",
+	[53] = "SIGNAL-53",
+	[54] = "SIGNAL-54",
+	[55] = "SIGNAL-55",
+	[56] = "SIGNAL-56",
+	[57] = "SIGNAL-57",
+	[58] = "SIGNAL-58",
+	[59] = "SIGNAL-59",
+	[60] = "SIGNAL-60",
+	[61] = "SIGNAL-61",
+	[62] = "SIGNAL-62",
+	[63] = "SIGNAL-63",
+	[64] = "SIGNAL-64", /* SIGRTMAX */
 };
 
 const char *argp_program_version = "sigsnoop 0.1";
 const char *argp_program_bug_address =
 	"https://github.com/iovisor/bcc/tree/master/libbpf-tools";
 const char argp_program_doc[] =
-"Trace standard and real-time signals.\n"
-"\n"
-"USAGE: sigsnoop [-h] [-x] [-k] [-n] [-p PID] [-s SIGNAL]\n"
-"\n"
-"EXAMPLES:\n"
-"    sigsnoop             # trace signals system-wide\n"
-"    sigsnoop -k          # trace signals issued by kill syscall only\n"
-"    sigsnoop -x          # trace failed signals only\n"
-"    sigsnoop -p 1216     # only trace PID 1216\n"
-"    sigsnoop -s 9        # only trace signal 9\n";
+    "Trace standard and real-time signals.\n"
+    "\n"
+    "USAGE: sigsnoop [-h] [-x] [-k] [-n] [-p PID] [-s SIGNAL]\n"
+    "\n"
+    "EXAMPLES:\n"
+    "    sigsnoop             # trace signals system-wide\n"
+    "    sigsnoop -k          # trace signals issued by kill syscall only\n"
+    "    sigsnoop -x          # trace failed signals only\n"
+    "    sigsnoop -p 1216     # only trace PID 1216\n"
+    "    sigsnoop -s 1,9,15   # trace signal 1, 9, 15\n";
 
 static const struct argp_option opts[] = {
-	{ "failed", 'x', NULL, 0, "Trace failed signals only." },
-	{ "kill", 'k', NULL, 0, "Trace signals issued by kill syscall only." },
-	{ "pid", 'p', "PID", 0, "Process ID to trace" },
-	{ "signal", 's', "SIGNAL", 0, "Signal to trace." },
-	{ "name", 'n', NULL, 0, "Output signal name instead of signal number." },
-	{ "verbose", 'v', NULL, 0, "Verbose debug output" },
-	{ NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help" },
-	{},
+    {"failed", 'x', NULL, 0, "Trace failed signals only.", 0},
+    {"kill", 'k', NULL, 0, "Trace signals issued by kill syscall only.", 0},
+    {"pid", 'p', "PID", 0, "Process ID to trace", 0},
+    {"signal", 's', "SIGNAL", 0, "Signals to trace.", 0},
+    {"name", 'n', NULL, 0, "Output signal name instead of signal number.", 0},
+    {"verbose", 'v', NULL, 0, "Verbose debug output", 0},
+    {NULL, 'h', NULL, OPTION_HIDDEN, "Show the full help", 0},
+    {},
 };
 
 static error_t parse_arg(int key, char *arg, struct argp_state *state)
 {
 	long pid, sig;
+        char *token;
 
-	switch (key) {
-	case 'p':
+        switch (key) {
+        case 'p':
 		errno = 0;
 		pid = strtol(arg, NULL, 10);
 		if (errno || pid <= 0) {
@@ -107,14 +141,18 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	case 's':
 		errno = 0;
-		sig = strtol(arg, NULL, 10);
-		if (errno || sig <= 0) {
-			warn("Invalid SIGNAL: %s\n", arg);
-			argp_usage(state);
-		}
-		target_signal = sig;
-		break;
-	case 'n':
+                token = strtok(arg, ",");
+                while (token) {
+                  sig = strtol(token, NULL, 10);
+                  if (errno || sig <= 0 || sig > 31) {
+                    warn("Inavlid SIGNAL: %s\n", token);
+                    argp_usage(state);
+                  }
+                  target_signals |= (1 << (sig - 1));
+                  token = strtok(NULL, ",");
+                }
+                break;
+        case 'n':
 		signal_name = true;
 		break;
 	case 'x':
@@ -131,8 +169,8 @@ static error_t parse_arg(int key, char *arg, struct argp_state *state)
 		break;
 	default:
 		return ARGP_ERR_UNKNOWN;
-	}
-	return 0;
+        }
+        return 0;
 }
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
@@ -146,7 +184,7 @@ static void alias_parse(char *prog)
 {
 	char *name = basename(prog);
 
-	if (!strcmp(name, "killsnoop")) {
+	if (strstr(name, "killsnoop")) {
 		kill_only = true;
 	}
 }
@@ -167,10 +205,10 @@ static void handle_event(void *ctx, int cpu, void *data, __u32 data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 	if (signal_name && e->sig < ARRAY_SIZE(sig_name))
-		printf("%-8s %-7d %-16s %-9s %-7d %-6d\n",
+		printf("%-8s %-7d %-16s %-12s %-7d %-6d\n",
 		       ts, e->pid, e->comm, sig_name[e->sig], e->tpid, e->ret);
 	else
-		printf("%-8s %-7d %-16s %-9d %-7d %-6d\n",
+		printf("%-8s %-7d %-16s %-12d %-7d %-6d\n",
 		       ts, e->pid, e->comm, e->sig, e->tpid, e->ret);
 }
 
@@ -204,8 +242,8 @@ int main(int argc, char **argv)
 	}
 
 	obj->rodata->filtered_pid = target_pid;
-	obj->rodata->target_signal = target_signal;
-	obj->rodata->failed_only = failed_only;
+        obj->rodata->target_signals = target_signals;
+        obj->rodata->failed_only = failed_only;
 
 	if (kill_only) {
 		bpf_program__set_autoload(obj->progs.sig_trace, false);
@@ -243,7 +281,7 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	printf("%-8s %-7s %-16s %-9s %-7s %-6s\n",
+	printf("%-8s %-7s %-16s %-12s %-7s %-6s\n",
 	       "TIME", "PID", "COMM", "SIG", "TPID", "RESULT");
 
 	while (!exiting) {

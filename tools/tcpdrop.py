@@ -21,6 +21,7 @@
 from __future__ import print_function
 from bcc import BPF
 import argparse
+import os
 from time import strftime
 from socket import inet_ntop, AF_INET, AF_INET6
 from struct import pack
@@ -44,6 +45,10 @@ group.add_argument("-6", "--ipv6", action="store_true",
     help="trace IPv6 family only")
 parser.add_argument("--ebpf", action="store_true",
     help=argparse.SUPPRESS)
+parser.add_argument("--netns-id", type=int,
+    help="the netns id to filter by", default=0)
+parser.add_argument("--pid-netns",
+    help="the pid whose netns to filter by", type=int, default=0)
 args = parser.parse_args()
 debug = 0
 
@@ -120,7 +125,9 @@ static int __trace_tcp_drop(void *ctx, struct sock *sk, struct sk_buff *skb)
     dport = ntohs(dport);
 
     FILTER_FAMILY
-    
+
+    FILTER_NETNS
+
     if (family == AF_INET) {
         struct ipv4_data_t data4 = {};
         data4.pid = pid;
@@ -193,6 +200,19 @@ elif args.ipv6:
 else:
     bpf_text = bpf_text.replace('FILTER_FAMILY', '')
 
+if args.pid_netns != 0:
+    if args.netns_id != 0:
+        print("ERROR: --pid_netns and --netns-id not allowed together")
+        exit()
+    args.netns_id = os.stat('/proc/{}/ns/net'.format(args.pid_netns)).st_ino
+
+if args.netns_id != 0:
+    code = 'if (sk->__sk_common.skc_net.net->ns.inum != {}) {{ return 0; }}'.format(
+        args.netns_id)
+    bpf_text = bpf_text.replace('FILTER_NETNS', code)
+else:
+    bpf_text = bpf_text.replace('FILTER_NETNS', '')
+
 # process event
 def print_ipv4_event(cpu, data, size):
     event = b["ipv4_events"].event(data)
@@ -228,8 +248,10 @@ b = BPF(text=bpf_text)
 if b.get_kprobe_functions(b"tcp_drop"):
     b.attach_kprobe(event="tcp_drop", fn_name="trace_tcp_drop")
 elif b.tracepoint_exists("skb", "kfree_skb"):
-    print("WARNING: tcp_drop() kernel function not found or traceable. "
-          "Use tracpoint:skb:kfree_skb instead.")
+    print("ERROR: tcp_drop() kernel function not found or traceable. "
+          "(It may have been inlined.) "
+          "Use tracepoint:skb:kfree_skb instead.")
+    exit()
 else:
     print("ERROR: tcp_drop() kernel function and tracpoint:skb:kfree_skb"
           " not found or traceable. "
